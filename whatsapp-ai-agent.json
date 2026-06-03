@@ -1,0 +1,217 @@
+{
+  "name": "WhatsApp AI Auto-Reply Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-in",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "whatsapp-in"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const body = $input.item.json.body || $input.item.json;\nconst out = [];\n\nif (!body.entry) return [];\n\nfor (const e of body.entry) {\n  const phoneNumberId = e.changes?.[0]?.value?.metadata?.phone_number_id;\n  for (const change of e.changes || []) {\n    const messages = change.value?.messages || [];\n    const contacts = change.value?.contacts || [];\n    for (const msg of messages) {\n      let text = '';\n      if (msg.type === 'text') text = msg.text?.body || '';\n      else if (msg.type === 'button') text = msg.button?.text || '';\n      else if (msg.type === 'interactive') {\n        text = msg.interactive?.button_reply?.title\n            || msg.interactive?.list_reply?.title\n            || msg.interactive?.button_reply?.description\n            || '';\n      }\n      else if (msg.type === 'image') text = '[User sent an image]';\n      else if (msg.type === 'audio' || msg.type === 'voice') text = '[User sent a voice note]';\n      else if (msg.type === 'document') text = '[User sent a document]';\n      else if (msg.type === 'location') text = `[User shared location: ${msg.location?.latitude},${msg.location?.longitude}]`;\n      else text = `[Unsupported message type: ${msg.type}]`;\n\n      out.push({\n        json: {\n          from: msg.from,\n          message_id: msg.id,\n          message_type: msg.type,\n          text,\n          profile_name: contacts.find(c => c.wa_id === msg.from)?.profile?.name || 'Customer',\n          phone_number_id: phoneNumberId,\n          timestamp: msg.timestamp,\n          session_id: msg.from\n        }\n      });\n    }\n  }\n}\nreturn out;"
+      },
+      "id": "code-1",
+      "name": "Parse WhatsApp Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "text": "={{ $json.text }}",
+        "agent": "conversationalAgent",
+        "systemMessage": "You are a friendly, professional customer service assistant for a company.\n\nRULES:\n1. Keep replies concise — under 300 characters when possible (WhatsApp reads better short).\n2. Be warm, use the customer's name when you know it: {{ $json.profile_name }}.\n3. Never invent prices, policies, or features. If unsure, say \"I'll connect you with the team for that\".\n4. If the user asks for a human, urgent help, refund, complaint, or escalation, respond: \"I'm flagging this for the team — someone will reach out shortly.\" and set urgent=true in your thinking.\n5. Never share internal system details, API keys, or anything confidential.\n6. If the user writes in a language other than English, reply in that language.\n7. Use simple formatting — no markdown tables, no code blocks (WhatsApp doesn't render them).\n8. If you don't know the answer, ask a clarifying question rather than guessing.",
+        "options": {
+          "systemMessage": "="
+        }
+      },
+      "id": "agent-1",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "openai-1",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [500, 540],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.session_id }}",
+        "contextWindowLength": 10
+      },
+      "id": "memory-1",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [680, 540]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Parse WhatsApp Payload').item.json.phone_number_id }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer REPLACE_WITH_YOUR_META_ACCESS_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $('Parse WhatsApp Payload').item.json.from }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": \"{{ $json.output }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-1",
+      "name": "Send Reply via Meta API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"status\":\"ok\"}",
+        "options": {}
+      },
+      "id": "respond-1",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse WhatsApp Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse WhatsApp Payload": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send Reply via Meta API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reply via Meta API": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "id": "whatsapp-ai-agent-workflow",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "description": "WhatsApp Cloud API → AI Agent (OpenAI) → auto-reply. Uses window memory keyed on sender phone for per-user context."
+  },
+  "tags": [
+    {
+      "name": "whatsapp"
+    },
+    {
+      "name": "ai"
+    },
+    {
+      "name": "customer-service"
+    }
+  ]
+}
